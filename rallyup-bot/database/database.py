@@ -1052,8 +1052,6 @@ class DatabaseManager:
             await db.execute('CREATE INDEX IF NOT EXISTS idx_clan_matches_scrim ON clan_matches(scrim_id)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_clan_participants_match ON clan_participants(match_id)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_clan_participants_user ON clan_participants(user_id)')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_server_admins_guild ON server_admins(guild_id)')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_server_admins_user ON server_admins(user_id)')
             
             await db.commit()
 
@@ -11116,6 +11114,9 @@ class DatabaseManager:
                 
                 # 미션 ID 생성
                 mission_id = self.generate_uuid()
+
+                if category == 'daily':
+                    base_points = 0
                 
                 # bonus_conditions를 JSON 문자열로 변환
                 bonus_json = json.dumps(bonus_conditions) if bonus_conditions else None
@@ -13488,19 +13489,23 @@ class DatabaseManager:
 
 
     async def get_time_slot_voters(self, recruitment_id: str, time_slot: str) -> List[str]:
-        """특정 시간대의 투표자 ID 목록"""
+        """특정 시간대에 투표한 사용자 ID 목록 조회"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 async with db.execute('''
-                    SELECT voter_ids FROM recruitment_time_slots 
+                    SELECT voter_ids FROM recruitment_time_slots
                     WHERE recruitment_id = ? AND time_slot = ?
                 ''', (recruitment_id, time_slot)) as cursor:
-                    result = await cursor.fetchone()
+                    row = await cursor.fetchone()
                     
-                    if result and result[0]:
-                        return result[0].split(',')
-                    
+                    if row and row[0]:
+                        # 콤마로 구분된 문자열을 리스트로 변환
+                        return row[0].split(',')
                     return []
+                    
+        except Exception as e:
+            print(f"❌ 투표자 조회 실패: {e}")
+            return []
                     
         except Exception as e:
             print(f"❌ 투표자 목록 조회 실패: {e}")
@@ -13857,6 +13862,83 @@ class DatabaseManager:
             import traceback
             traceback.print_exc()
             return False, str(e)
+
+    async def get_voting_recruitments_to_close(self) -> List[Dict]:
+        """확정된 시간이 도래한 투표 모집 조회 (내전 시작 시간 기준)"""
+        try:
+            now = datetime.now()
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                # 확정된 투표 모집 중, 내전 시작 시간이 도래한 것들 조회
+                async with db.execute('''
+                    SELECT 
+                        r.id,
+                        r.guild_id,
+                        r.title,
+                        r.description,
+                        r.deadline,
+                        r.confirmed_time,
+                        r.channel_id,
+                        r.message_id,
+                        r.min_participants,
+                        r.created_by
+                    FROM scrim_recruitments r
+                    WHERE r.recruitment_type = 'voting'
+                    AND r.status = 'confirmed'
+                    AND r.confirmed_time IS NOT NULL
+                ''') as cursor:
+                    rows = await cursor.fetchall()
+                    
+                    if not rows:
+                        return []
+                    
+                    # 내전 시작 시간 체크
+                    results = []
+                    for row in rows:
+                        recruitment = dict(row)
+                        
+                        # 마감 시간 파싱
+                        deadline_dt = datetime.fromisoformat(recruitment['deadline'])
+                        confirmed_time = recruitment['confirmed_time']
+                        
+                        # 내전 날짜 계산
+                        hour, minute = map(int, confirmed_time.split(':'))
+                        base_date = deadline_dt.date()
+                        scrim_dt = datetime.combine(base_date, datetime.min.time().replace(hour=hour, minute=minute))
+                        
+                        # 내전 시간이 마감 시간보다 이전이면 다음날로
+                        if scrim_dt <= deadline_dt:
+                            from datetime import timedelta
+                            scrim_dt += timedelta(days=1)
+                        
+                        # 현재 시간이 내전 시작 시간 이후인지 체크
+                        if now >= scrim_dt:
+                            recruitment['scrim_date'] = scrim_dt.isoformat()
+                            results.append(recruitment)
+                    
+                    return results
+                    
+        except Exception as e:
+            print(f"❌ 마감할 투표 모집 조회 실패: {e}")
+            return []
+
+    async def update_voting_recruitment_status(self, recruitment_id: str, status: str) -> bool:
+        """투표 모집 상태 업데이트"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute('''
+                    UPDATE scrim_recruitments 
+                    SET status = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND recruitment_type = 'voting'
+                ''', (status, recruitment_id))
+                await db.commit()
+                
+                print(f"✅ 투표 모집 상태 업데이트: {recruitment_id} -> {status}")
+                return True
+                
+        except Exception as e:
+            print(f"❌ 투표 모집 상태 업데이트 실패: {e}")
+            return False
 
 
 
