@@ -3031,26 +3031,23 @@ class DatabaseManager:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute('PRAGMA journal_mode=WAL')
                 
-                # 기존 설정이 있는지 확인
                 async with db.execute('''
                     SELECT id FROM server_settings WHERE guild_id = ?
                 ''', (guild_id,)) as cursor:
                     existing = await cursor.fetchone()
                 
                 if existing:
-                    # 업데이트
                     await db.execute('''
                         UPDATE server_settings 
-                        SET new_member_role_id = ?, 
-                            auto_assign_new_member = ?,
+                        SET newbie_role_id = ?, 
+                            auto_role_change = ?,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE guild_id = ?
                     ''', (role_id, enabled, guild_id))
                 else:
-                    # 신규 생성
                     await db.execute('''
                         INSERT INTO server_settings 
-                        (guild_id, new_member_role_id, auto_assign_new_member)
+                        (guild_id, newbie_role_id, auto_role_change)
                         VALUES (?, ?, ?)
                     ''', (guild_id, role_id, enabled))
                 
